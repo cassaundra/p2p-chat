@@ -1,7 +1,0 @@
-[package]
-name = "p2p-chat-cli"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-p2p-chat = { path = "../p2p-chat" }

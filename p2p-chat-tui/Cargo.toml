@@ -1,0 +1,18 @@
+[package]
+name = "p2p-chat-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+crossterm = { version = "0.20", features = ["event-stream"] }
+fern = "0.6"
+futures = "0.3"
+futures-timer = "3.0"
+libp2p = { version = "0.41", features = ["tcp-tokio"] }
+log = "0.4"
+structopt = "0.3"
+tokio = { version = "1.15", features = ["full"] }
+
+p2p-chat = { path = "../p2p-chat" }

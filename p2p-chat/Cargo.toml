@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+futures = "0.3"
+libp2p = { version = "0.41", features = ["floodsub", "mplex", "noise", "tcp-tokio", "mdns"] }
+log = "0.4"
+rmp-serde = "0.15"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { version = "1.15", features = ["full"] }
