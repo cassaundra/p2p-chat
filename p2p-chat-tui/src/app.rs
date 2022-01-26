@@ -3,19 +3,13 @@ use std::io::Write;
 use crossterm::event::{Event, KeyCode};
 use crossterm::{cursor, execute, style, terminal};
 
+#[derive(Default)]
 pub struct App {
     input_buffer: String,
     history: Vec<String>,
 }
 
 impl App {
-    pub fn new() -> Self {
-        App {
-            input_buffer: String::with_capacity(128),
-            history: Vec::new(),
-        }
-    }
-
     pub fn draw<W: Write>(&self, w: &mut W) -> anyhow::Result<()> {
         let (_cols, rows) =
             terminal::size().expect("could not determine terminal size");
@@ -39,8 +33,8 @@ impl App {
 
     pub fn handle_event(&mut self, event: Event) -> Option<AppEvent> {
         // TODO use a readline library
-        match event {
-            Event::Key(event) => match event.code {
+        if let Event::Key(event) = event {
+            match event.code {
                 KeyCode::Esc => return Some(AppEvent::Quit),
                 KeyCode::Char(c @ ' '..='~') => {
                     self.input_buffer.push(c);
@@ -55,8 +49,7 @@ impl App {
                     return event;
                 }
                 _ => {}
-            },
-            _ => (),
+            }
         }
 
         None

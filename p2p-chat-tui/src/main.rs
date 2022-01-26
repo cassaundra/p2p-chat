@@ -26,8 +26,9 @@ async fn main() -> anyhow::Result<()> {
 
     // start client
     let id_keys = gen_id_keys();
-    let mut client = Client::new(id_keys).await?;
-    client.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    let mut client = Client::new(id_keys).await?.fuse();
+
+    client.get_mut().listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     // setup tui
 
@@ -36,19 +37,19 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, terminal::EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
 
-    let mut app = App::new();
+    let mut app = App::default();
 
     let mut term_events = EventStream::new().fuse();
 
     loop {
-        let tick = Delay::new(Duration::from_millis(1000 / 60));
+        let tick = Delay::new(Duration::from_millis(1000 / 20));
 
         select! {
             _ = tick => {
                 app.draw(&mut stdout)?;
             }
-            event = client.next() => {
-                if let Some(Some(ClientEvent::Message { contents, source })) = event {
+            Some(event) = client.select_next_some() => {
+                if let ClientEvent::Message { contents, source } = event {
                     let peer_name = name_from_peer(source);
                     app.push_history(format!("{peer_name}: {contents}"));
                 }
@@ -57,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
                 // TODO handle error?
                 if let Some(event) = app.handle_event(event?) {
                     match event {
-                        AppEvent::SendMessage(message) => client.send_message(&message)?,
+                        AppEvent::SendMessage(message) => client.get_mut().send_message(&message)?,
                         AppEvent::Quit => break,
                     }
                 }

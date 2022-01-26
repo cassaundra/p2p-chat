@@ -9,9 +9,11 @@ use std::{
 use futures::Stream;
 use libp2p::{
     core::{either::EitherError, upgrade},
-    gossipsub::{self, Gossipsub, GossipsubEvent, error::GossipsubHandlerError},
+    gossipsub::{
+        self, error::GossipsubHandlerError, Gossipsub, GossipsubEvent,
+    },
     identity::Keypair,
-    mdns::{MdnsEvent, Mdns},
+    mdns::{Mdns, MdnsEvent},
     mplex,
     noise::{self, AuthenticKeypair, X25519Spec},
     swarm::{SwarmBuilder, SwarmEvent},
@@ -20,7 +22,7 @@ use libp2p::{
 };
 use log::info;
 
-pub const TOPIC: &'static str = "p2p-chat";
+pub const TOPIC: &str = "p2p-chat";
 
 // TODO message/command protocol
 
@@ -29,9 +31,6 @@ enum ComposedEvent {
     Gossipsub(GossipsubEvent),
     Mdns(MdnsEvent),
 }
-
-// TODO use gossipsub instead of floodsub?
-// might scale better
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "ComposedEvent")]
@@ -144,25 +143,21 @@ impl Client {
         event: SwarmEvent<
             ComposedEvent,
             EitherError<GossipsubHandlerError, OtherErr>,
-            // gossipsub::error::GossipsubHandlerError,
         >,
     ) -> Option<ClientEvent> {
         match event {
-            SwarmEvent::Behaviour(ComposedEvent::Gossipsub(event)) => {
-                match event {
-                    GossipsubEvent::Message {
-                        propagation_source,
-                        message_id: _,
-                        message,
-                    } => {
-                        return Some(ClientEvent::Message {
-                            contents: String::from_utf8_lossy(&message.data)
-                                .to_string(),
-                            source: propagation_source,
-                        });
-                    }
-                    _ => {}
-                }
+            SwarmEvent::Behaviour(ComposedEvent::Gossipsub(
+                GossipsubEvent::Message {
+                    propagation_source,
+                    message_id: _,
+                    message,
+                },
+            )) => {
+                return Some(ClientEvent::Message {
+                    contents: String::from_utf8_lossy(&message.data)
+                        .to_string(),
+                    source: propagation_source,
+                });
             }
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
@@ -177,9 +172,7 @@ impl Client {
                     for (peer, _) in list {
                         let behaviour = self.swarm.behaviour_mut();
                         if !behaviour.mdns.has_node(&peer) {
-                            behaviour
-                                .gossipsub
-                                .remove_explicit_peer(&peer);
+                            behaviour.gossipsub.remove_explicit_peer(&peer);
                         }
                     }
                 }
@@ -192,7 +185,6 @@ impl Client {
 }
 
 impl Stream for Client {
-    // TODO this should actually be a bare ClientEvent
     type Item = Option<ClientEvent>;
 
     fn poll_next(
@@ -227,8 +219,7 @@ pub fn gen_static_keypair(
 }
 
 const NUM_NAMES: usize = 4;
-const NAMES: [&'static str; NUM_NAMES] =
-    ["alice", "bailie", "charlotte", "danielle"];
+const NAMES: [&str; NUM_NAMES] = ["alice", "bailie", "charlotte", "danielle"];
 
 pub fn name_from_peer(peer_id: PeerId) -> &'static str {
     // obviously not very smart or "secure"
