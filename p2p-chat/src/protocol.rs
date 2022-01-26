@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+// NOTE u128 not supported in msgpack
+
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
-    Message(String),
-    Nickname(String),
+    Message { contents: String, timestamp: u64 },
 }
 
 // TODO map err

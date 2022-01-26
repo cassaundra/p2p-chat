@@ -3,7 +3,7 @@ use std::{
     hash::{Hash, Hasher},
     pin::Pin,
     task::Poll,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use futures::Stream;
@@ -20,7 +20,9 @@ use libp2p::{
     tcp::TokioTcpConfig,
     Multiaddr, NetworkBehaviour, PeerId, Swarm, Transport,
 };
-use log::info;
+use log::{info, warn};
+
+use crate::protocol::Command;
 
 pub const TOPIC: &str = "p2p-chat";
 
@@ -111,10 +113,25 @@ impl Client {
     }
 
     pub fn send_message(&mut self, message: &str) -> crate::Result<()> {
+        // https://stackoverflow.com/questions/26593387
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_millis()
+            .try_into()
+            .expect("time overflowed u64");
+
+        let command = Command::Message {
+            contents: message.to_owned(),
+            timestamp,
+        }
+        .encode()?;
+
         self.swarm
             .behaviour_mut()
             .gossipsub
-            .publish(gossipsub::IdentTopic::new(TOPIC), message.as_bytes())?;
+            .publish(gossipsub::IdentTopic::new(TOPIC), command)?;
+
         Ok(())
     }
 
@@ -148,16 +165,27 @@ impl Client {
         match event {
             SwarmEvent::Behaviour(ComposedEvent::Gossipsub(
                 GossipsubEvent::Message {
-                    propagation_source,
+                    propagation_source: source,
                     message_id: _,
                     message,
                 },
             )) => {
-                return Some(ClientEvent::Message {
-                    contents: String::from_utf8_lossy(&message.data)
-                        .to_string(),
-                    source: propagation_source,
-                });
+                // TODO is this the best way to handle decoding issue?
+
+                let packet = Command::decode(&message.data);
+
+                if let Err(err) = &packet {
+                    warn!("Could not decode message: {:?}", err);
+                }
+
+                match packet.unwrap() {
+                    Command::Message {
+                        contents,
+                        timestamp: _,
+                    } => {
+                        return Some(ClientEvent::Message { contents, source });
+                    }
+                }
             }
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
