@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
                 // TODO handle error?
                 if let Some(event) = app.handle_event(event?) {
                     match event {
-                        AppEvent::SendMessage(message) => client.send_message(&message),
+                        AppEvent::SendMessage(message) => client.send_message(&message)?,
                         AppEvent::Quit => break,
                     }
                 }
