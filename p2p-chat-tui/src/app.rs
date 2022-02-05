@@ -1,30 +1,46 @@
 use std::io::Write;
 
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use crossterm::{cursor, execute, style, terminal};
 
 #[derive(Default)]
 pub struct App {
+    name: String,
     input_buffer: String,
     history: Vec<String>,
 }
 
 impl App {
+    pub fn new(name: impl ToString) -> Self {
+        App {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
     pub fn draw<W: Write>(&self, w: &mut W) -> anyhow::Result<()> {
-        let (_cols, rows) =
+        let (cols, rows) =
             terminal::size().expect("could not determine terminal size");
 
         execute!(w, terminal::Clear(terminal::ClearType::All))?;
 
         for (idx, line) in self.history.iter().rev().enumerate() {
-            let row = rows - 2 - idx as u16;
+            let row = rows - 3 - idx as u16;
             execute!(w, cursor::MoveTo(0, row), style::Print(line))?;
         }
 
         execute!(
             w,
+            cursor::MoveTo(0, rows - 2),
+            style::SetBackgroundColor(style::Color::DarkGrey),
+            style::Print("-".repeat(cols.into())),
+        )?;
+
+        execute!(
+            w,
+            style::ResetColor,
             cursor::MoveTo(0, rows - 1),
-            style::Print("> "),
+            style::Print(format!("{}: ", self.name)),
             style::Print(&self.input_buffer)
         )?;
 
@@ -35,7 +51,11 @@ impl App {
         // TODO use a readline library
         if let Event::Key(event) = event {
             match event.code {
-                KeyCode::Esc => return Some(AppEvent::Quit),
+                KeyCode::Char('c')
+                    if event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    return Some(AppEvent::Quit)
+                }
                 KeyCode::Char(c @ ' '..='~') => {
                     self.input_buffer.push(c);
                 }

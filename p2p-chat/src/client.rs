@@ -13,7 +13,7 @@ use libp2p::{
         self, error::GossipsubHandlerError, Gossipsub, GossipsubEvent,
     },
     identity::Keypair,
-    mdns::{Mdns, MdnsEvent},
+    mdns::{self, Mdns, MdnsEvent},
     mplex,
     noise::{self, AuthenticKeypair, X25519Spec},
     swarm::{SwarmBuilder, SwarmEvent},
@@ -87,7 +87,6 @@ impl Client {
                 .heartbeat_interval(Duration::from_secs(15))
                 .validation_mode(gossipsub::ValidationMode::Strict)
                 .message_id_fn(message_id_fn)
-                .allow_self_origin(true)
                 .build()
                 .unwrap();
 
@@ -97,7 +96,7 @@ impl Client {
                     gossipsub_config,
                 )
                 .unwrap(),
-                mdns: Mdns::new(Default::default()).await?,
+                mdns: Mdns::new(mdns::MdnsConfig::default()).await?,
             };
 
             behaviour.gossipsub.subscribe(&topic)?;
@@ -142,7 +141,6 @@ impl Client {
     }
 
     pub fn listen_on(&mut self, addr: Multiaddr) -> crate::Result<()> {
-        info!("Listening on {}", addr);
         self.swarm.listen_on(addr)?;
         Ok(())
     }
@@ -175,7 +173,7 @@ impl Client {
                 let packet = Command::decode(&message.data);
 
                 if let Err(err) = &packet {
-                    warn!("Could not decode message: {:?}", err);
+                    warn!("Could not decode message: {:x?}", err);
                 }
 
                 match packet.unwrap() {
@@ -246,8 +244,15 @@ pub fn gen_static_keypair(
     Ok(noise::Keypair::<noise::X25519Spec>::new().into_authentic(id_keys)?)
 }
 
-const NUM_NAMES: usize = 4;
-const NAMES: [&str; NUM_NAMES] = ["alice", "bailie", "charlotte", "danielle"];
+const NUM_NAMES: usize = 6;
+const NAMES: [&str; NUM_NAMES] = [
+    "alice",
+    "bailie",
+    "charlotte",
+    "danielle",
+    "eleanor",
+    "francesca",
+];
 
 pub fn name_from_peer(peer_id: PeerId) -> &'static str {
     // obviously not very smart or "secure"
