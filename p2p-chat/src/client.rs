@@ -11,6 +11,7 @@ use libp2p::{
     core::{either::EitherError, upgrade},
     gossipsub::{
         self, error::GossipsubHandlerError, Gossipsub, GossipsubEvent,
+        GossipsubMessage, MessageId,
     },
     identity::Keypair,
     mdns::{self, Mdns, MdnsEvent},
@@ -56,9 +57,22 @@ impl From<MdnsEvent> for ComposedEvent {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ClientEvent {
-    Message { contents: String, source: PeerId },
-    PeerConnected { source: PeerId },
-    PeerDisconnected { source: PeerId },
+    Message {
+        contents: String,
+        timestamp: u64,
+        source: PeerId,
+    },
+    UpdatedNickname {
+        nickname: String,
+        source: PeerId,
+    },
+    PeerConnected(PeerId),
+    PeerDisconnected(PeerId),
+    Dialing(PeerId),
+    OutgoingConnectionError {
+        peer_id: Option<PeerId>,
+        error: libp2p::swarm::DialError,
+    },
 }
 
 pub struct Client {
@@ -86,6 +100,7 @@ impl Client {
             let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(15))
                 .validation_mode(gossipsub::ValidationMode::Strict)
+                .validate_messages()
                 .message_id_fn(message_id_fn)
                 .build()
                 .unwrap();
@@ -164,27 +179,10 @@ impl Client {
             SwarmEvent::Behaviour(ComposedEvent::Gossipsub(
                 GossipsubEvent::Message {
                     propagation_source: source,
-                    message_id: _,
+                    message_id,
                     message,
                 },
-            )) => {
-                // TODO is this the best way to handle decoding issue?
-
-                let packet = Command::decode(&message.data);
-
-                if let Err(err) = &packet {
-                    warn!("Could not decode message: {:x?}", err);
-                }
-
-                match packet.unwrap() {
-                    Command::Message {
-                        contents,
-                        timestamp: _,
-                    } => {
-                        return Some(ClientEvent::Message { contents, source });
-                    }
-                }
-            }
+            )) => return self.handle_message(message, message_id, source),
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
                     for (peer, _) in list {
@@ -203,10 +201,74 @@ impl Client {
                     }
                 }
             },
+            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                return Some(ClientEvent::PeerConnected(peer_id));
+            }
+            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                return Some(ClientEvent::PeerDisconnected(peer_id));
+            }
+            SwarmEvent::Dialing(peer_id) => {
+                return Some(ClientEvent::Dialing(peer_id));
+            }
+            SwarmEvent::OutgoingConnectionError { peer_id, error } => {
+                return Some(ClientEvent::OutgoingConnectionError {
+                    peer_id,
+                    error,
+                });
+            }
             _ => {}
         }
 
         None
+    }
+
+    fn handle_message(
+        &mut self,
+        message: GossipsubMessage,
+        message_id: MessageId,
+        source: PeerId,
+    ) -> Option<ClientEvent> {
+        let acceptance;
+
+        let evt = match Command::decode(&message.data) {
+            Ok(cmd) => {
+                if cmd.is_valid() {
+                    acceptance = gossipsub::MessageAcceptance::Accept;
+                } else {
+                    warn!("Rejecting invalid message from {source}");
+                    acceptance = gossipsub::MessageAcceptance::Reject;
+                }
+
+                let evt = match cmd {
+                    Command::Message {
+                        contents,
+                        timestamp,
+                    } => ClientEvent::Message {
+                        contents,
+                        timestamp,
+                        source,
+                    },
+                    Command::Nickname(nickname) => {
+                        ClientEvent::UpdatedNickname { nickname, source }
+                    }
+                };
+
+                Some(evt)
+            }
+            Err(err) => {
+                warn!("Could not decode message, rejecting: {:x?}", err);
+                acceptance = gossipsub::MessageAcceptance::Reject;
+                None
+            }
+        };
+
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .report_message_validation_result(&message_id, &source, acceptance)
+            .expect("could not report message validation");
+
+        evt
     }
 }
 

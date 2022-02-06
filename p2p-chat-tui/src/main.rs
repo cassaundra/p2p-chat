@@ -1,11 +1,13 @@
+use std::env;
 use std::time::Duration;
 use std::{io, net::SocketAddr};
 
 use crossterm::{event::EventStream, execute, style, terminal};
 use futures::StreamExt;
 use futures_timer::Delay;
+use libp2p::gossipsub::error::PublishError;
 use libp2p::{multiaddr::multiaddr, Multiaddr};
-use p2p_chat::{gen_id_keys, name_from_peer, Client, ClientEvent};
+use p2p_chat::{gen_id_keys, name_from_peer, Client, ClientEvent, Error};
 use structopt::StructOpt;
 use tokio::select;
 
@@ -17,6 +19,9 @@ use crate::app::AppEvent;
 #[derive(StructOpt)]
 #[structopt(name = "p2p-chat-tui")]
 struct Opt {
+    /// Nickname.
+    #[structopt(short, long)]
+    nick: Option<String>,
     /// Port to listen on.
     #[structopt(short, long)]
     port: Option<u16>,
@@ -51,8 +56,12 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, terminal::EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
 
-    let name = name_from_peer(client.get_ref().peer_id());
-    let mut app = App::new(name);
+    // let name = name_from_peer(client.get_ref().peer_id());
+    let nick = opts
+        .nick
+        .or_else(|| env::var("USER").ok())
+        .unwrap_or_else(|| "user".to_owned());
+    let mut app = App::new(&nick);
 
     let mut term_events = EventStream::new().fuse();
 
@@ -64,32 +73,57 @@ async fn main() -> anyhow::Result<()> {
                 app.draw(&mut stdout)?;
             }
             Some(event) = client.select_next_some() => {
-                if let ClientEvent::Message { contents, source } = event {
-                    let peer_name = name_from_peer(source);
-                    app.push_history(format!("{peer_name}: {contents}"));
+                match event {
+                    ClientEvent::Message { contents, timestamp: _, source } => {
+                        let peer_name = name_from_peer(source);
+                        app.push_message(peer_name, contents);
+                    }
+                    ClientEvent::PeerConnected(peer_id) => {
+                        app.push_info(format!("peer connected: {peer_id}"));
+                    }
+                    ClientEvent::PeerDisconnected(peer_id) => {
+                        app.push_info(format!("peer disconnected: {peer_id}"));
+                    }
+                    ClientEvent::Dialing(peer_id) => {
+                        app.push_info(format!("dialing: {peer_id}"));
+                    }
+                    ClientEvent::OutgoingConnectionError {
+                        peer_id: _,
+                        error: _,
+                    } => {
+                        app.push_info(format!("failed to connect to peer"));
+                    }
+                    _ => {}
                 }
+                app.draw(&mut stdout)?;
             }
             event = term_events.select_next_some() => {
-                // TODO handle error?
+                // TODO handle multiple messages at a time, mostly for copy/paste
                 if let Some(event) = app.handle_event(event?) {
                     match event {
                         AppEvent::SendMessage(message) => {
-                            app.push_history(format!("{name}: {message}"));
-                            client.get_mut().send_message(&message)?
+                            match client.get_mut().send_message(&message) {
+                                Err(Error::PublishError(PublishError::InsufficientPeers)) => {
+                                    app.push_info("could not send message, insufficient peers");
+                                }
+                                Err(err) => app.push_info(format!("{err:?}")),
+                                Ok(_) => app.push_message(&nick, message),
+                            }
                         },
                         AppEvent::Quit => break,
                     }
                 }
+                app.draw(&mut stdout)?;
             }
         }
     }
 
+    terminal::disable_raw_mode()?;
     execute!(
         io::stdout(),
         style::ResetColor,
         terminal::LeaveAlternateScreen
     )?;
-    terminal::disable_raw_mode()?;
 
     Ok(())
 }

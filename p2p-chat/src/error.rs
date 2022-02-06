@@ -23,4 +23,6 @@ pub enum Error {
     DecodeError(#[from] rmp_serde::decode::Error),
     #[error("I/O error")]
     IoError(#[from] io::Error),
+    #[error("invalid message")]
+    InvalidMessage,
 }

@@ -13,6 +13,7 @@ futures-timer = "3.0"
 libp2p = { version = "0.41", features = ["tcp-tokio"] }
 log = "0.4"
 structopt = "0.3"
+textwrap = "0.14"
 tokio = { version = "1.15", features = ["full"] }
 
 p2p-chat = { path = "../p2p-chat" }
