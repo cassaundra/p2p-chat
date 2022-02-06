@@ -8,8 +8,11 @@ pub const MAX_NICK_LENGTH: usize = 20;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
-    Message { contents: String, timestamp: u64 },
-    Nickname(String),
+    Message {
+        contents: String,
+        nick: String,
+        timestamp: u64,
+    },
 }
 
 // TODO map err
@@ -33,12 +36,14 @@ impl Command {
 
     pub fn is_valid(&self) -> bool {
         match self {
-            Command::Message { contents, timestamp: _ } => {
+            Command::Message {
+                contents,
+                nick,
+                timestamp: _,
+            } => {
                 // TODO validate timestamp?
                 contents.len() <= MAX_MESSAGE_LENGTH
-            }
-            Command::Nickname(nick) => {
-                nick.len() <= MAX_NICK_LENGTH
+                    && nick.len() <= MAX_NICK_LENGTH
             }
         }
     }

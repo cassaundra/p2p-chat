@@ -27,8 +27,6 @@ use crate::protocol::Command;
 
 pub const TOPIC: &str = "p2p-chat";
 
-// TODO message/command protocol
-
 #[derive(Debug)]
 enum ComposedEvent {
     Gossipsub(GossipsubEvent),
@@ -59,6 +57,7 @@ impl From<MdnsEvent> for ComposedEvent {
 pub enum ClientEvent {
     Message {
         contents: String,
+        nick: String,
         timestamp: u64,
         source: PeerId,
     },
@@ -76,12 +75,13 @@ pub enum ClientEvent {
 }
 
 pub struct Client {
+    nick: String,
     id_keys: Keypair,
     swarm: Swarm<ComposedBehaviour>,
 }
 
 impl Client {
-    pub async fn new(id_keys: Keypair) -> crate::Result<Self> {
+    pub async fn new(nick: &str, id_keys: Keypair) -> crate::Result<Self> {
         let peer_id = PeerId::from(id_keys.public());
         let noise_keys = gen_static_keypair(&id_keys)?;
 
@@ -123,10 +123,16 @@ impl Client {
                 .build()
         };
 
-        Ok(Client { id_keys, swarm })
+        Ok(Client {
+            id_keys,
+            nick: nick.to_owned(),
+            swarm,
+        })
     }
 
     pub fn send_message(&mut self, message: &str) -> crate::Result<()> {
+        // TODO validate locally
+
         // https://stackoverflow.com/questions/26593387
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -137,16 +143,11 @@ impl Client {
 
         let command = Command::Message {
             contents: message.to_owned(),
+            nick: self.nick.clone(),
             timestamp,
-        }
-        .encode()?;
+        };
 
-        self.swarm
-            .behaviour_mut()
-            .gossipsub
-            .publish(gossipsub::IdentTopic::new(TOPIC), command)?;
-
-        Ok(())
+        self.publish(&command)
     }
 
     pub fn dial(&mut self, addr: Multiaddr) -> crate::Result<()> {
@@ -166,6 +167,19 @@ impl Client {
 
     pub fn peer_id(&self) -> PeerId {
         PeerId::from(self.id_keys.public())
+    }
+
+    pub fn nick(&self) -> &String {
+        &self.nick
+    }
+
+    fn publish(&mut self, command: &Command) -> crate::Result<()> {
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(gossipsub::IdentTopic::new(TOPIC), command.encode()?)?;
+
+        Ok(())
     }
 
     fn handle_event<OtherErr>(
@@ -242,15 +256,14 @@ impl Client {
                 let evt = match cmd {
                     Command::Message {
                         contents,
+                        nick,
                         timestamp,
                     } => ClientEvent::Message {
                         contents,
+                        nick,
                         timestamp,
                         source,
                     },
-                    Command::Nickname(nickname) => {
-                        ClientEvent::UpdatedNickname { nickname, source }
-                    }
                 };
 
                 Some(evt)
@@ -304,23 +317,4 @@ pub fn gen_static_keypair(
     id_keys: &Keypair,
 ) -> crate::Result<AuthenticKeypair<X25519Spec>> {
     Ok(noise::Keypair::<noise::X25519Spec>::new().into_authentic(id_keys)?)
-}
-
-const NUM_NAMES: usize = 6;
-const NAMES: [&str; NUM_NAMES] = [
-    "alice",
-    "bailie",
-    "charlotte",
-    "danielle",
-    "eleanor",
-    "francesca",
-];
-
-pub fn name_from_peer(peer_id: PeerId) -> &'static str {
-    // obviously not very smart or "secure"
-    let sum = peer_id
-        .to_bytes()
-        .iter()
-        .fold(0u8, |acc, b| acc.wrapping_add(*b));
-    NAMES[sum as usize % NUM_NAMES]
 }

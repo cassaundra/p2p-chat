@@ -7,7 +7,7 @@ use futures::StreamExt;
 use futures_timer::Delay;
 use libp2p::gossipsub::error::PublishError;
 use libp2p::{multiaddr::multiaddr, Multiaddr};
-use p2p_chat::{gen_id_keys, name_from_peer, Client, ClientEvent, Error};
+use p2p_chat::{gen_id_keys, Client, ClientEvent, Error};
 use structopt::StructOpt;
 use tokio::select;
 
@@ -38,8 +38,12 @@ async fn main() -> anyhow::Result<()> {
     setup_logger(log::LevelFilter::Info)?;
 
     // start client
+    let nick = opts
+        .nick
+        .or_else(|| env::var("USER").ok())
+        .unwrap_or_else(|| "user".to_owned());
     let id_keys = gen_id_keys();
-    let mut client = Client::new(id_keys).await?.fuse();
+    let mut client = Client::new(&nick, id_keys).await?.fuse();
 
     let port = opts.port.unwrap_or_default();
     client
@@ -56,11 +60,6 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, terminal::EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
 
-    // let name = name_from_peer(client.get_ref().peer_id());
-    let nick = opts
-        .nick
-        .or_else(|| env::var("USER").ok())
-        .unwrap_or_else(|| "user".to_owned());
     let mut app = App::new(&nick);
 
     let mut term_events = EventStream::new().fuse();
@@ -74,9 +73,8 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(event) = client.select_next_some() => {
                 match event {
-                    ClientEvent::Message { contents, timestamp: _, source } => {
-                        let peer_name = name_from_peer(source);
-                        app.push_message(peer_name, contents);
+                    ClientEvent::Message { contents, nick, timestamp: _, source: _ } => {
+                        app.push_message(nick, contents);
                     }
                     ClientEvent::PeerConnected(peer_id) => {
                         app.push_info(format!("peer connected: {peer_id}"));
