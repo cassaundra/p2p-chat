@@ -1,20 +1,14 @@
 use std::env;
-use std::time::Duration;
 use std::{io, net::SocketAddr};
 
-use crossterm::{event::EventStream, execute, style, terminal};
-use futures::StreamExt;
-use futures_timer::Delay;
-use libp2p::gossipsub::error::PublishError;
+use crossterm::{execute, style, terminal};
 use libp2p::{multiaddr::multiaddr, Multiaddr};
-use p2p_chat::{gen_id_keys, Client, ClientEvent, Error};
 use structopt::StructOpt;
-use tokio::select;
+
+use p2p_chat::{gen_id_keys, Client};
 
 pub mod app;
 use app::App;
-
-use crate::app::AppEvent;
 
 #[derive(StructOpt)]
 #[structopt(name = "p2p-chat-tui")]
@@ -43,14 +37,12 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| env::var("USER").ok())
         .unwrap_or_else(|| "user".to_owned());
     let id_keys = gen_id_keys();
-    let mut client = Client::new(&nick, id_keys).await?.fuse();
+    let mut client = Client::new(&nick, id_keys).await?;
 
     let port = opts.port.unwrap_or_default();
-    client
-        .get_mut()
-        .listen_on(multiaddr!(Ip4([0, 0, 0, 0]), Tcp(port)))?;
+    client.listen_on(multiaddr!(Ip4([0, 0, 0, 0]), Tcp(port)))?;
     for addr in opts.dial {
-        client.get_mut().dial(addr)?;
+        client.dial(addr)?;
     }
 
     // setup tui
@@ -60,61 +52,8 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, terminal::EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
 
-    let mut app = App::new(&nick);
-
-    let mut term_events = EventStream::new().fuse();
-
-    loop {
-        let tick = Delay::new(Duration::from_millis(1000 / 20));
-
-        select! {
-            _ = tick => {
-                app.draw(&mut stdout)?;
-            }
-            Some(event) = client.select_next_some() => {
-                match event {
-                    ClientEvent::Message { contents, nick, timestamp: _, source: _ } => {
-                        app.push_message(nick, contents);
-                    }
-                    ClientEvent::PeerConnected(peer_id) => {
-                        app.push_info(format!("peer connected: {peer_id}"));
-                    }
-                    ClientEvent::PeerDisconnected(peer_id) => {
-                        app.push_info(format!("peer disconnected: {peer_id}"));
-                    }
-                    ClientEvent::Dialing(peer_id) => {
-                        app.push_info(format!("dialing: {peer_id}"));
-                    }
-                    ClientEvent::OutgoingConnectionError {
-                        peer_id: _,
-                        error: _,
-                    } => {
-                        app.push_info(format!("failed to connect to peer"));
-                    }
-                    _ => {}
-                }
-                app.draw(&mut stdout)?;
-            }
-            event = term_events.select_next_some() => {
-                // TODO handle multiple messages at a time, mostly for copy/paste
-                if let Some(event) = app.handle_event(event?) {
-                    match event {
-                        AppEvent::SendMessage(message) => {
-                            match client.get_mut().send_message(&message) {
-                                Err(Error::PublishError(PublishError::InsufficientPeers)) => {
-                                    app.push_info("could not send message, insufficient peers");
-                                }
-                                Err(err) => app.push_info(format!("{err:?}")),
-                                Ok(_) => app.push_message(&nick, message),
-                            }
-                        },
-                        AppEvent::Quit => break,
-                    }
-                }
-                app.draw(&mut stdout)?;
-            }
-        }
-    }
+    let mut app = App::new(client);
+    app.run(&mut stdout).await?;
 
     terminal::disable_raw_mode()?;
     execute!(
