@@ -42,7 +42,8 @@ impl Command {
                 timestamp: _,
             } => {
                 // TODO validate timestamp?
-                contents.len() <= MAX_MESSAGE_LENGTH
+                !contents.is_empty()
+                    && contents.len() <= MAX_MESSAGE_LENGTH
                     && nick.len() <= MAX_NICK_LENGTH
             }
         }
