@@ -163,7 +163,7 @@ impl App {
                 {
                     return Some(AppEvent::Quit)
                 }
-                KeyCode::Char(c @ ' '..='~') => {
+                KeyCode::Char(c) => {
                     self.input_buffer.push(c);
                 }
                 KeyCode::Backspace => {
