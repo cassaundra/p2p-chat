@@ -23,7 +23,7 @@ use libp2p::{
 };
 use log::{info, warn};
 
-use crate::protocol::Command;
+use crate::protocol::{Command, MessageType};
 
 pub const TOPIC: &str = "p2p-chat";
 
@@ -57,12 +57,12 @@ impl From<MdnsEvent> for ComposedEvent {
 pub enum ClientEvent {
     Message {
         contents: String,
-        nick: String,
         timestamp: u64,
+        message_type: MessageType,
         source: PeerId,
     },
     UpdatedNickname {
-        nickname: String,
+        nick: String,
         source: PeerId,
     },
     PeerConnected(PeerId),
@@ -130,7 +130,11 @@ impl Client {
         })
     }
 
-    pub fn send_message(&mut self, message: &str) -> crate::Result<()> {
+    pub fn send_message(
+        &mut self,
+        message: &str,
+        message_type: MessageType,
+    ) -> crate::Result<()> {
         // TODO validate locally
 
         // https://stackoverflow.com/questions/26593387
@@ -141,10 +145,10 @@ impl Client {
             .try_into()
             .expect("time overflowed u64");
 
-        let command = Command::Message {
+        let command = Command::MessageSend {
             contents: message.to_owned(),
-            nick: self.nick.clone(),
             timestamp,
+            message_type,
         };
 
         self.publish(&command)
@@ -254,19 +258,23 @@ impl Client {
                 }
 
                 let evt = match cmd {
-                    Command::Message {
+                    Command::MessageSend {
                         contents,
-                        nick,
                         timestamp,
-                    } => ClientEvent::Message {
+                        message_type,
+                    } => Some(ClientEvent::Message {
                         contents,
-                        nick,
                         timestamp,
+                        message_type,
                         source,
-                    },
+                    }),
+                    Command::NicknameUpdate { nick } => {
+                        Some(ClientEvent::UpdatedNickname { nick, source })
+                    }
+                    _ => None,
                 };
 
-                Some(evt)
+                evt
             }
             Err(err) => {
                 warn!("Could not decode message, rejecting: {:x?}", err);

@@ -8,6 +8,7 @@ use futures::stream::Fuse;
 use futures::StreamExt;
 use futures_timer::Delay;
 use libp2p::gossipsub::error::PublishError;
+use p2p_chat::protocol::MessageType;
 use tokio::select;
 
 use p2p_chat::{Client, ClientEvent, Error};
@@ -42,8 +43,8 @@ impl App {
                 }
                 Some(event) = self.client.select_next_some() => {
                     match event {
-                        ClientEvent::Message { contents, nick, timestamp: _, source: _ } => {
-                            self.push_message(nick, contents);
+                        ClientEvent::Message { contents, timestamp: _, message_type: _, source: _ } => {
+                            self.push_message("???", contents);
                         }
                         ClientEvent::PeerConnected(peer_id) => {
                             self.push_info(format!("peer connected: {peer_id}"));
@@ -69,7 +70,7 @@ impl App {
                     if let Some(event) = self.handle_event(event?) {
                         match event {
                             AppEvent::SendMessage(message) => {
-                                match self.client.get_mut().send_message(&message) {
+                                match self.client.get_mut().send_message(&message, MessageType::Normal) {
                                     Err(Error::PublishError(PublishError::InsufficientPeers)) => {
                                         self.push_info("could not send message, insufficient peers");
                                     }
