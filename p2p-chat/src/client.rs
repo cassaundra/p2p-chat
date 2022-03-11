@@ -339,7 +339,8 @@ impl Client {
                     }
                 }
             },
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
                 return Ok(Some(ClientEvent::PeerConnected(peer_id)));
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
