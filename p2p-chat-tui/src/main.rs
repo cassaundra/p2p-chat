@@ -22,6 +22,9 @@ struct Opt {
     /// Peers to dial, separated by commas.
     #[structopt(short, long, parse(try_from_str = parse_multiaddrs))]
     dial: Vec<Multiaddr>,
+    /// Turn on verbose logging.
+    #[structopt(short, long)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -29,7 +32,12 @@ async fn main() -> anyhow::Result<()> {
     let opts = Opt::from_args();
 
     // setup logger
-    setup_logger(log::LevelFilter::Info)?;
+    let level_filter = if opts.verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    setup_logger(level_filter)?;
 
     // start client
     let nick = opts

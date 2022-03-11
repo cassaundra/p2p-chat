@@ -36,7 +36,7 @@ impl App {
         let mut term_events = EventStream::new().fuse();
 
         loop {
-            let tick = Delay::new(Duration::from_millis(1000 / 20));
+            let tick = Delay::new(Duration::from_millis(1000 / 4));
 
             select! {
                 _ = tick => {
@@ -60,7 +60,7 @@ impl App {
                             peer_id: _,
                             error: _,
                         } => {
-                            self.push_info(format!("failed to connect to peer"));
+                            self.push_info("failed to connect to peer");
                         }
                         _ => {}
                     }

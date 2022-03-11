@@ -8,7 +8,7 @@ use std::{
 
 use futures::Stream;
 use libp2p::{
-    core::{either::EitherError, upgrade, SignedEnvelope},
+    core::{either::EitherError, upgrade},
     gossipsub::{
         self, error::GossipsubHandlerError, Gossipsub, GossipsubEvent,
         GossipsubMessage, MessageId,
@@ -27,9 +27,9 @@ use libp2p::{
 };
 use log::{info, warn};
 
-use crate::protocol::{Command, MemoryKey, MemoryValue, MessageType};
-
-pub const TOPIC: &str = "p2p-chat";
+use crate::protocol::{
+    Command, MemoryKey, MemoryValue, MessageType, DEFAULT_GOSSIPSUB_TOPIC,
+};
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "ComposedEvent")]
@@ -107,7 +107,7 @@ impl Client {
             .multiplex(mplex::MplexConfig::new())
             .boxed();
 
-        let topic = gossipsub::IdentTopic::new(TOPIC);
+        let topic = gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC);
 
         let swarm = {
             let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
@@ -129,10 +129,8 @@ impl Client {
             .encode_signed(&id_keys)?;
 
             kademlia.start_providing(nick_key.clone())?;
-            kademlia.put_record(
-                Record::new(nick_key, nick_value),
-                Quorum::One,
-            )?;
+            kademlia
+                .put_record(Record::new(nick_key, nick_value), Quorum::One)?;
 
             let mut behaviour = ComposedBehaviour {
                 gossipsub: Gossipsub::new(
@@ -216,8 +214,7 @@ impl Client {
             Some(Some(nick)) => Ok(Some(nick)),
             Some(None) => Ok(None),
             None => {
-                let key =
-                    Key::new(&MemoryKey::Nickname(peer.clone()).encode()?);
+                let key = Key::new(&MemoryKey::Nickname(*peer).encode()?);
                 self.swarm
                     .behaviour_mut()
                     .kademlia
@@ -228,10 +225,10 @@ impl Client {
     }
 
     fn publish(&mut self, command: &Command) -> crate::Result<()> {
-        self.swarm
-            .behaviour_mut()
-            .gossipsub
-            .publish(gossipsub::IdentTopic::new(TOPIC), command.encode()?)?;
+        self.swarm.behaviour_mut().gossipsub.publish(
+            gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC),
+            command.encode()?,
+        )?;
 
         Ok(())
     }
@@ -256,31 +253,33 @@ impl Client {
             )) => return Ok(self.handle_message(message, message_id, source)),
             SwarmEvent::Behaviour(ComposedEvent::Kademlia(
                 KademliaEvent::OutboundQueryCompleted { result, .. },
-            )) => match result {
-                QueryResult::GetRecord(Ok(get_record_ok)) => {
-                    for peer_record in get_record_ok.records {
-                        let record = peer_record.record;
-                        let key = MemoryKey::decode(&record.key.to_vec())?;
-                        let value = MemoryValue::decode(&record.value)?;
+            )) => {
+                match result {
+                    QueryResult::GetRecord(Ok(get_record_ok)) => {
+                        for peer_record in get_record_ok.records {
+                            let record = peer_record.record;
+                            let key = MemoryKey::decode(&record.key.to_vec())?;
+                            let value = MemoryValue::decode(&record.value)?;
 
-                        match (key, value) {
-                            (
-                                MemoryKey::Nickname(key),
-                                MemoryValue::Nickname { user, nickname },
-                            ) => {
-                                if user != key {
-                                    warn!("Possible key/value mismatch in DHT.");
-                                    return Ok(None);
+                            match (key, value) {
+                                (
+                                    MemoryKey::Nickname(key),
+                                    MemoryValue::Nickname { user, nickname },
+                                ) => {
+                                    if user != key {
+                                        warn!("Possible key/value mismatch in DHT!");
+                                        return Ok(None);
+                                    }
+
+                                    self.nick_cache.insert(key, Some(nickname));
                                 }
-
-                                self.nick_cache.insert(key, Some(nickname));
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
+                    _ => {} // TODO log others
                 }
-                _ => {} // TODO log others
-            },
+            }
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
                     for (peer, multiaddr) in list {
@@ -342,7 +341,7 @@ impl Client {
                     acceptance = gossipsub::MessageAcceptance::Reject;
                 }
 
-                let evt = match cmd {
+                match cmd {
                     Command::MessageSend {
                         contents,
                         timestamp,
@@ -358,9 +357,7 @@ impl Client {
                         Some(ClientEvent::UpdatedNickname { nick, source })
                     }
                     _ => None,
-                };
-
-                evt
+                }
             }
             Err(err) => {
                 warn!("Could not decode message, rejecting: {:x?}", err);
@@ -389,7 +386,7 @@ impl Stream for Client {
         // TODO handle error...
         Pin::new(&mut self.swarm)
             .poll_next(cx)
-            .map(|e| e.map(|e| self.handle_event(e).unwrap_or_else(|_| None)))
+            .map(|e| e.map(|e| self.handle_event(e).unwrap_or(None)))
     }
 }
 

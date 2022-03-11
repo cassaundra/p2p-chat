@@ -1,9 +1,5 @@
-use libp2p::{
-    core::{signed_envelope, PublicKey, SignedEnvelope},
-    identity::Keypair,
-    Multiaddr, PeerId,
-};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use libp2p::{core::SignedEnvelope, identity::Keypair, PeerId};
+use serde::{Deserialize, Serialize};
 
 // NOTE u128 not supported in msgpack
 
@@ -16,8 +12,11 @@ pub const SIGNED_ENVELOPE_DOMAIN: &str = "p2p-chat-data";
 /// The maximum length of a message, in characters.
 pub const MAX_MESSAGE_LENGTH: usize = 512;
 
-/// THe maximum length of a nickname, in characters.
+/// The maximum length of a nickname, in characters.
 pub const MAX_NICK_LENGTH: usize = 20;
+
+/// The MessagePack codec code within [multicodec](https://github.com/multiformats/multicodec).
+pub const MULTICODEC_MSGPACK: &[u8] = &[0x02, 0x01];
 
 // TODO ?
 pub type ChannelIdentifier = String;
@@ -114,10 +113,7 @@ impl MemoryKey {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum MemoryValue {
-    Nickname {
-        user: PeerId,
-        nickname: String,
-    },
+    Nickname { user: PeerId, nickname: String },
     Channel(Channel),
 }
 
