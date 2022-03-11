@@ -8,6 +8,7 @@ use futures::stream::Fuse;
 use futures::StreamExt;
 use futures_timer::Delay;
 use libp2p::gossipsub::error::PublishError;
+use libp2p::PeerId;
 use p2p_chat::protocol::MessageType;
 use tokio::select;
 
@@ -43,8 +44,8 @@ impl App {
                 }
                 Some(event) = self.client.select_next_some() => {
                     match event {
-                        ClientEvent::Message { contents, timestamp: _, message_type: _, source: _ } => {
-                            self.push_message("???", contents);
+                        ClientEvent::Message { contents, timestamp: _, message_type, source } => {
+                            self.push_message(source, contents, message_type);
                         }
                         ClientEvent::PeerConnected(peer_id) => {
                             self.push_info(format!("peer connected: {peer_id}"));
@@ -76,8 +77,7 @@ impl App {
                                     }
                                     Err(err) => self.push_info(format!("{err:?}")),
                                     Ok(_) => {
-                                        let nick = self.client.get_ref().nick().clone();
-                                        self.push_message(&nick, message)
+                                        self.push_message(self.client.get_ref().peer_id(), message, MessageType::Normal)
                                     },
                                 }
                             },
@@ -103,15 +103,32 @@ impl App {
             .rev()
             .flat_map(|entry| {
                 let (color, prefix, contents) = match entry {
-                    HistoryEntry::Message { nick, contents } => {
-                        (style::Color::White, nick.as_str(), contents.as_str())
+                    HistoryEntry::Message {
+                        sender,
+                        contents,
+                        message_type: _,
+                    } => {
+                        let nick = match self
+                            .client
+                            .get_mut()
+                            .fetch_nickname(sender)
+                            .unwrap()
+                        {
+                            Some(nick) => nick.to_owned(),
+                            None => {
+                                sender.to_base58().chars().take(12).collect()
+                            }
+                        };
+                        (style::Color::White, nick, contents.as_str())
                     }
-                    HistoryEntry::Info { message } => {
-                        (style::Color::DarkGrey, "INFO", message.as_str())
-                    }
+                    HistoryEntry::Info { message } => (
+                        style::Color::DarkGrey,
+                        "INFO".to_owned(),
+                        message.as_str(),
+                    ),
                 };
 
-                wrap(prefix, contents, cols)
+                wrap(&prefix, contents, cols)
                     .into_iter()
                     .rev()
                     .map(move |line| (color, line))
@@ -184,12 +201,14 @@ impl App {
 
     fn push_message(
         &mut self,
-        nick: impl Into<String>,
+        sender: PeerId,
         contents: impl Into<String>,
+        message_type: MessageType,
     ) {
         self.history.push_back(HistoryEntry::Message {
-            nick: nick.into(),
+            sender,
             contents: contents.into(),
+            message_type,
         });
     }
 
@@ -208,8 +227,14 @@ pub enum AppEvent {
 
 #[derive(Clone, Debug)]
 enum HistoryEntry {
-    Message { nick: String, contents: String },
-    Info { message: String },
+    Message {
+        sender: PeerId,
+        contents: String,
+        message_type: MessageType,
+    },
+    Info {
+        message: String,
+    },
 }
 
 fn wrap(prefix: &str, message: &str, columns: u16) -> Vec<String> {

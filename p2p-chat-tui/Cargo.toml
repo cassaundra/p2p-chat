@@ -10,7 +10,7 @@ crossterm = { version = "0.20", features = ["event-stream"] }
 fern = "0.6"
 futures = "0.3"
 futures-timer = "3.0"
-libp2p = { version = "0.41", features = ["tcp-tokio"] }
+libp2p = { version = "0.43", features = ["tcp-tokio", "serde"] }
 log = "0.4"
 structopt = "0.3"
 textwrap = "0.14"

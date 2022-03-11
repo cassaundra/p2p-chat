@@ -1,10 +1,22 @@
-use libp2p::Multiaddr;
-use serde::{Deserialize, Serialize};
+use libp2p::{
+    core::{signed_envelope, PublicKey, SignedEnvelope},
+    identity::Keypair,
+    Multiaddr, PeerId,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 // NOTE u128 not supported in msgpack
 
+/// The gossipsub topic for top-level network communication.
+pub const DEFAULT_GOSSIPSUB_TOPIC: &str = "/p2p-chat";
+
+/// The signed envelope domain for use in Kademlia memory store.
+pub const SIGNED_ENVELOPE_DOMAIN: &str = "p2p-chat-data";
+
+/// The maximum length of a message, in characters.
 pub const MAX_MESSAGE_LENGTH: usize = 512;
 
+/// THe maximum length of a nickname, in characters.
 pub const MAX_NICK_LENGTH: usize = 20;
 
 // TODO ?
@@ -13,12 +25,12 @@ pub type ChannelIdentifier = String;
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Channel {
     identifier: ChannelIdentifier,
-    owner: Multiaddr,
-    peers: Vec<Multiaddr>,
+    owner: PeerId,
+    peers: Vec<PeerId>,
     version: u64,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Copy, Clone, Debug)]
 pub enum MessageType {
     Normal,
     Me,
@@ -53,7 +65,9 @@ impl Command {
         let dec: Command = rmp_serde::from_read(encoded)?;
 
         if !dec.is_valid() {
-            return Err(crate::Error::InvalidMessage);
+            return Err(crate::Error::InvalidData(String::from(
+                "decoded command not valid",
+            )));
         }
 
         Ok(dec)
@@ -79,5 +93,63 @@ impl Command {
             }
             _ => true,
         }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum MemoryKey {
+    Nickname(PeerId),
+    Channel(String),
+}
+
+impl MemoryKey {
+    pub fn decode(encoded: &[u8]) -> crate::Result<Self> {
+        Ok(rmp_serde::from_read(encoded)?)
+    }
+
+    pub fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(rmp_serde::to_vec(self)?)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum MemoryValue {
+    Nickname {
+        user: PeerId,
+        nickname: String,
+    },
+    Channel(Channel),
+}
+
+impl MemoryValue {
+    pub fn decode(encoded: &[u8]) -> crate::Result<Self> {
+        let envelope = SignedEnvelope::from_protobuf_encoding(encoded)?;
+        let (payload, signing_key) = envelope.payload_and_signing_key(
+            SIGNED_ENVELOPE_DOMAIN.to_owned(),
+            MULTICODEC_MSGPACK,
+        )?;
+        let value = rmp_serde::from_read(payload)?;
+
+        let expected_signer = match &value {
+            MemoryValue::Nickname { user, .. } => user,
+            MemoryValue::Channel(channel) => &channel.owner,
+        };
+
+        if expected_signer != &signing_key.to_peer_id() {
+            return Err(crate::Error::SignatureMismatch);
+        }
+
+        Ok(value)
+    }
+
+    pub fn encode_signed(&self, key: &Keypair) -> crate::Result<Vec<u8>> {
+        let payload = rmp_serde::to_vec(self)?;
+        let envelope = SignedEnvelope::new(
+            key,
+            SIGNED_ENVELOPE_DOMAIN.to_owned(),
+            MULTICODEC_MSGPACK.to_owned(),
+            payload,
+        )?;
+        Ok(envelope.into_protobuf_encoding())
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
     pin::Pin,
     task::Poll,
@@ -8,12 +8,16 @@ use std::{
 
 use futures::Stream;
 use libp2p::{
-    core::{either::EitherError, upgrade},
+    core::{either::EitherError, upgrade, SignedEnvelope},
     gossipsub::{
         self, error::GossipsubHandlerError, Gossipsub, GossipsubEvent,
         GossipsubMessage, MessageId,
     },
     identity::Keypair,
+    kad::{
+        record::Key, store::MemoryStore, Kademlia, KademliaEvent, QueryResult,
+        Quorum, Record,
+    },
     mdns::{self, Mdns, MdnsEvent},
     mplex,
     noise::{self, AuthenticKeypair, X25519Spec},
@@ -23,26 +27,34 @@ use libp2p::{
 };
 use log::{info, warn};
 
-use crate::protocol::{Command, MessageType};
+use crate::protocol::{Command, MemoryKey, MemoryValue, MessageType};
 
 pub const TOPIC: &str = "p2p-chat";
-
-#[derive(Debug)]
-enum ComposedEvent {
-    Gossipsub(GossipsubEvent),
-    Mdns(MdnsEvent),
-}
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "ComposedEvent")]
 struct ComposedBehaviour {
     gossipsub: Gossipsub,
+    kademlia: Kademlia<MemoryStore>,
     mdns: Mdns,
+}
+
+#[derive(Debug)]
+enum ComposedEvent {
+    Gossipsub(GossipsubEvent),
+    Kademlia(KademliaEvent),
+    Mdns(MdnsEvent),
 }
 
 impl From<GossipsubEvent> for ComposedEvent {
     fn from(val: GossipsubEvent) -> Self {
         ComposedEvent::Gossipsub(val)
+    }
+}
+
+impl From<KademliaEvent> for ComposedEvent {
+    fn from(val: KademliaEvent) -> Self {
+        ComposedEvent::Kademlia(val)
     }
 }
 
@@ -76,6 +88,7 @@ pub enum ClientEvent {
 
 pub struct Client {
     nick: String,
+    nick_cache: HashMap<PeerId, Option<String>>,
     id_keys: Keypair,
     swarm: Swarm<ComposedBehaviour>,
 }
@@ -105,12 +118,29 @@ impl Client {
                 .build()
                 .unwrap();
 
+            let memory_store = MemoryStore::new(peer_id);
+            let mut kademlia = Kademlia::new(peer_id, memory_store);
+
+            let nick_key = Key::new(&MemoryKey::Nickname(peer_id).encode()?);
+            let nick_value = MemoryValue::Nickname {
+                user: peer_id,
+                nickname: nick.to_owned(),
+            }
+            .encode_signed(&id_keys)?;
+
+            kademlia.start_providing(nick_key.clone())?;
+            kademlia.put_record(
+                Record::new(nick_key, nick_value),
+                Quorum::One,
+            )?;
+
             let mut behaviour = ComposedBehaviour {
                 gossipsub: Gossipsub::new(
                     gossipsub::MessageAuthenticity::Signed(id_keys.clone()),
                     gossipsub_config,
                 )
                 .unwrap(),
+                kademlia,
                 mdns: Mdns::new(mdns::MdnsConfig::default()).await?,
             };
 
@@ -124,8 +154,9 @@ impl Client {
         };
 
         Ok(Client {
-            id_keys,
             nick: nick.to_owned(),
+            nick_cache: HashMap::new(),
+            id_keys,
             swarm,
         })
     }
@@ -177,6 +208,25 @@ impl Client {
         &self.nick
     }
 
+    pub fn fetch_nickname(
+        &mut self,
+        peer: &PeerId,
+    ) -> crate::Result<Option<&String>> {
+        match self.nick_cache.get(peer) {
+            Some(Some(nick)) => Ok(Some(nick)),
+            Some(None) => Ok(None),
+            None => {
+                let key =
+                    Key::new(&MemoryKey::Nickname(peer.clone()).encode()?);
+                self.swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_record(key, Quorum::One);
+                Ok(None)
+            }
+        }
+    }
+
     fn publish(&mut self, command: &Command) -> crate::Result<()> {
         self.swarm
             .behaviour_mut()
@@ -190,9 +240,12 @@ impl Client {
         &mut self,
         event: SwarmEvent<
             ComposedEvent,
-            EitherError<GossipsubHandlerError, OtherErr>,
+            EitherError<
+                EitherError<GossipsubHandlerError, std::io::Error>,
+                OtherErr,
+            >,
         >,
-    ) -> Option<ClientEvent> {
+    ) -> crate::Result<Option<ClientEvent>> {
         match event {
             SwarmEvent::Behaviour(ComposedEvent::Gossipsub(
                 GossipsubEvent::Message {
@@ -200,44 +253,76 @@ impl Client {
                     message_id,
                     message,
                 },
-            )) => return self.handle_message(message, message_id, source),
+            )) => return Ok(self.handle_message(message, message_id, source)),
+            SwarmEvent::Behaviour(ComposedEvent::Kademlia(
+                KademliaEvent::OutboundQueryCompleted { result, .. },
+            )) => match result {
+                QueryResult::GetRecord(Ok(get_record_ok)) => {
+                    for peer_record in get_record_ok.records {
+                        let record = peer_record.record;
+                        let key = MemoryKey::decode(&record.key.to_vec())?;
+                        let value = MemoryValue::decode(&record.value)?;
+
+                        match (key, value) {
+                            (
+                                MemoryKey::Nickname(key),
+                                MemoryValue::Nickname { user, nickname },
+                            ) => {
+                                if user != key {
+                                    warn!("Possible key/value mismatch in DHT.");
+                                    return Ok(None);
+                                }
+
+                                self.nick_cache.insert(key, Some(nickname));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {} // TODO log others
+            },
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
-                    for (peer, _) in list {
+                    for (peer, multiaddr) in list {
                         self.swarm
                             .behaviour_mut()
                             .gossipsub
                             .add_explicit_peer(&peer);
+                        self.swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .add_address(&peer, multiaddr);
                     }
                 }
                 MdnsEvent::Expired(list) => {
-                    for (peer, _) in list {
+                    for (peer, multiaddr) in list {
                         let behaviour = self.swarm.behaviour_mut();
                         if !behaviour.mdns.has_node(&peer) {
                             behaviour.gossipsub.remove_explicit_peer(&peer);
                         }
+                        behaviour.kademlia.remove_address(&peer, &multiaddr);
                     }
                 }
             },
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                return Some(ClientEvent::PeerConnected(peer_id));
+                return Ok(Some(ClientEvent::PeerConnected(peer_id)));
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                return Some(ClientEvent::PeerDisconnected(peer_id));
+                return Ok(Some(ClientEvent::PeerDisconnected(peer_id)));
             }
             SwarmEvent::Dialing(peer_id) => {
-                return Some(ClientEvent::Dialing(peer_id));
+                return Ok(Some(ClientEvent::Dialing(peer_id)));
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error } => {
-                return Some(ClientEvent::OutgoingConnectionError {
+                return Ok(Some(ClientEvent::OutgoingConnectionError {
                     peer_id,
                     error,
-                });
+                }));
             }
             _ => {}
-        }
+        };
 
-        None
+        Ok(None)
     }
 
     fn handle_message(
@@ -269,6 +354,7 @@ impl Client {
                         source,
                     }),
                     Command::NicknameUpdate { nick } => {
+                        self.nick_cache.insert(source, Some(nick.clone()));
                         Some(ClientEvent::UpdatedNickname { nick, source })
                     }
                     _ => None,
@@ -300,9 +386,10 @@ impl Stream for Client {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        // TODO handle error...
         Pin::new(&mut self.swarm)
             .poll_next(cx)
-            .map(|e| e.map(|e| self.handle_event(e)))
+            .map(|e| e.map(|e| self.handle_event(e).unwrap_or_else(|_| None)))
     }
 }
 

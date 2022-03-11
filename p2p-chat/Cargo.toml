@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3"
-libp2p = { version = "0.41", features = ["floodsub", "mplex", "noise", "tcp-tokio", "mdns"] }
+libp2p = { version = "0.43", features = ["floodsub", "mplex", "noise", "tcp-tokio", "mdns", "serde"] }
 log = "0.4"
 rmp-serde = "0.15"
 serde = { version = "1", features = ["derive"] }
