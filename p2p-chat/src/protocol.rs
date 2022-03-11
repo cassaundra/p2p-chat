@@ -1,4 +1,4 @@
-use libp2p::{core::SignedEnvelope, identity::Keypair, PeerId};
+use libp2p::{core::SignedEnvelope, gossipsub, identity::Keypair, PeerId};
 use serde::{Deserialize, Serialize};
 
 // NOTE u128 not supported in msgpack
@@ -11,6 +11,9 @@ pub const SIGNED_ENVELOPE_DOMAIN: &str = "p2p-chat-data";
 
 /// The maximum length of a message, in characters.
 pub const MAX_MESSAGE_LENGTH: usize = 512;
+
+/// The maximum length of a channel identifier, in characters.
+pub const MAX_CHANNEL_IDENTIFIER_LENGTH: usize = 64;
 
 /// The maximum length of a nickname, in characters.
 pub const MAX_NICK_LENGTH: usize = 20;
@@ -48,6 +51,7 @@ pub enum Command {
     },
     MessageSend {
         contents: String,
+        channel: ChannelIdentifier,
         timestamp: u64,
         message_type: MessageType,
     },
@@ -81,11 +85,14 @@ impl Command {
         match self {
             Command::MessageSend {
                 contents,
+                channel,
                 timestamp: _,
                 message_type: _,
             } => {
                 // TODO validate timestamp?
-                !contents.is_empty() && contents.len() <= MAX_MESSAGE_LENGTH
+                !contents.is_empty()
+                    && contents.len() <= MAX_MESSAGE_LENGTH
+                    && channel.len() <= MAX_CHANNEL_IDENTIFIER_LENGTH
             }
             Command::NicknameUpdate { nick } => {
                 nick.is_empty() && nick.len() <= MAX_NICK_LENGTH
@@ -148,4 +155,8 @@ impl MemoryValue {
         )?;
         Ok(envelope.into_protobuf_encoding())
     }
+}
+
+pub fn topic_from_channel(ident: &ChannelIdentifier) -> gossipsub::IdentTopic {
+    gossipsub::IdentTopic::new(format!("/p2p-chat/channel/{ident}"))
 }

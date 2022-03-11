@@ -28,7 +28,8 @@ use libp2p::{
 use log::{info, warn};
 
 use crate::protocol::{
-    Command, MemoryKey, MemoryValue, MessageType, DEFAULT_GOSSIPSUB_TOPIC,
+    topic_from_channel, ChannelIdentifier, Command, MemoryKey, MemoryValue,
+    MessageType, DEFAULT_GOSSIPSUB_TOPIC,
 };
 
 #[derive(NetworkBehaviour)]
@@ -69,6 +70,7 @@ impl From<MdnsEvent> for ComposedEvent {
 pub enum ClientEvent {
     Message {
         contents: String,
+        channel: ChannelIdentifier,
         timestamp: u64,
         message_type: MessageType,
         source: PeerId,
@@ -89,6 +91,7 @@ pub enum ClientEvent {
 pub struct Client {
     nick: String,
     nick_cache: HashMap<PeerId, Option<String>>,
+    channels: Vec<ChannelIdentifier>,
     id_keys: Keypair,
     swarm: Swarm<ComposedBehaviour>,
 }
@@ -154,15 +157,49 @@ impl Client {
         Ok(Client {
             nick: nick.to_owned(),
             nick_cache: HashMap::new(),
+            channels: Vec::new(),
             id_keys,
             swarm,
         })
+    }
+
+    pub fn join_channel(
+        &mut self,
+        ident: ChannelIdentifier,
+    ) -> crate::Result<()> {
+        if self.channels.contains(&ident) {
+            return Ok(());
+        }
+
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic_from_channel(&ident))?;
+        self.channels.push(ident);
+
+        Ok(())
+    }
+
+    pub fn leave_channel(
+        &mut self,
+        ident: ChannelIdentifier,
+    ) -> crate::Result<()> {
+        if let Some(idx) = self.channels.iter().position(|c| *c == ident) {
+            self.channels.remove(idx);
+            self.swarm
+                .behaviour_mut()
+                .gossipsub
+                .subscribe(&topic_from_channel(&ident))?;
+        }
+
+        Ok(())
     }
 
     pub fn send_message(
         &mut self,
         message: &str,
         message_type: MessageType,
+        channel: ChannelIdentifier,
     ) -> crate::Result<()> {
         // TODO validate locally
 
@@ -174,13 +211,20 @@ impl Client {
             .try_into()
             .expect("time overflowed u64");
 
+        let topic = topic_from_channel(&channel);
         let command = Command::MessageSend {
             contents: message.to_owned(),
+            channel,
             timestamp,
             message_type,
         };
 
-        self.publish(&command)
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(topic, command.encode()?)?;
+
+        Ok(())
     }
 
     pub fn dial(&mut self, addr: Multiaddr) -> crate::Result<()> {
@@ -210,6 +254,7 @@ impl Client {
         &mut self,
         peer: &PeerId,
     ) -> crate::Result<Option<&String>> {
+        // TODO this is waaayyyy bad! :o
         match self.nick_cache.get(peer) {
             Some(Some(nick)) => Ok(Some(nick)),
             Some(None) => Ok(None),
@@ -219,19 +264,20 @@ impl Client {
                     .behaviour_mut()
                     .kademlia
                     .get_record(key, Quorum::One);
+                // self.nick_cache.insert(*peer, None);
                 Ok(None)
             }
         }
     }
 
-    fn publish(&mut self, command: &Command) -> crate::Result<()> {
-        self.swarm.behaviour_mut().gossipsub.publish(
-            gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC),
-            command.encode()?,
-        )?;
+    // fn publish(&mut self, command: &Command) -> crate::Result<()> {
+    //     self.swarm.behaviour_mut().gossipsub.publish(
+    //         gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC),
+    //         command.encode()?,
+    //     )?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     fn handle_event<OtherErr>(
         &mut self,
@@ -283,14 +329,9 @@ impl Client {
             SwarmEvent::Behaviour(ComposedEvent::Mdns(event)) => match event {
                 MdnsEvent::Discovered(list) => {
                     for (peer, multiaddr) in list {
-                        self.swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .add_explicit_peer(&peer);
-                        self.swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .add_address(&peer, multiaddr);
+                        let behaviour = self.swarm.behaviour_mut();
+                        behaviour.gossipsub.add_explicit_peer(&peer);
+                        behaviour.kademlia.add_address(&peer, multiaddr);
                     }
                 }
                 MdnsEvent::Expired(list) => {
@@ -344,10 +385,12 @@ impl Client {
                 match cmd {
                     Command::MessageSend {
                         contents,
+                        channel,
                         timestamp,
                         message_type,
                     } => Some(ClientEvent::Message {
                         contents,
+                        channel,
                         timestamp,
                         message_type,
                         source,

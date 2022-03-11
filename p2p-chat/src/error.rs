@@ -20,9 +20,13 @@ pub enum Error {
     #[error("signing error")]
     SigningError(#[from] libp2p::identity::error::SigningError),
     #[error("signed envelope decoding error")]
-    SignedEnvelopeDecodeError(#[from] libp2p::core::signed_envelope::DecodingError),
+    SignedEnvelopeDecodeError(
+        #[from] libp2p::core::signed_envelope::DecodingError,
+    ),
     #[error("signed envelope read payload error")]
-    SignedEnvelopeReadPayloadError(#[from] libp2p::core::signed_envelope::ReadPayloadError),
+    SignedEnvelopeReadPayloadError(
+        #[from] libp2p::core::signed_envelope::ReadPayloadError,
+    ),
     #[error("libp2p transport error")]
     TransportError(#[from] libp2p::TransportError<io::Error>),
     #[error("encode error")]

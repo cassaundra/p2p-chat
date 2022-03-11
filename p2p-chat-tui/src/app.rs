@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use futures::StreamExt;
 use futures_timer::Delay;
 use libp2p::gossipsub::error::PublishError;
 use libp2p::PeerId;
-use p2p_chat::protocol::MessageType;
+use p2p_chat::protocol::{ChannelIdentifier, MessageType};
 use tokio::select;
 
 use p2p_chat::{Client, ClientEvent, Error};
@@ -17,7 +17,10 @@ use p2p_chat::{Client, ClientEvent, Error};
 pub struct App {
     client: Fuse<Client>,
     input_buffer: String,
-    history: VecDeque<HistoryEntry>,
+    current_channel: Option<ChannelIdentifier>,
+    channel_histories: HashMap<ChannelIdentifier, VecDeque<HistoryEntry>>,
+    system_history: VecDeque<String>,
+    wants_to_quit: bool,
 }
 
 impl App {
@@ -25,7 +28,10 @@ impl App {
         App {
             client: client.fuse(),
             input_buffer: String::with_capacity(64),
-            history: VecDeque::new(),
+            current_channel: None,
+            channel_histories: HashMap::new(),
+            system_history: VecDeque::new(),
+            wants_to_quit: false,
         }
     }
 
@@ -35,7 +41,7 @@ impl App {
     ) -> anyhow::Result<()> {
         let mut term_events = EventStream::new().fuse();
 
-        loop {
+        while !self.wants_to_quit {
             let tick = Delay::new(Duration::from_millis(1000 / 4));
 
             select! {
@@ -44,46 +50,30 @@ impl App {
                 }
                 Some(event) = self.client.select_next_some() => {
                     match event {
-                        ClientEvent::Message { contents, timestamp: _, message_type, source } => {
-                            self.push_message(source, contents, message_type);
+                        ClientEvent::Message { contents, channel, timestamp: _, message_type, source } => {
+                            self.push_message(source, contents, channel, message_type);
                         }
                         ClientEvent::PeerConnected(peer_id) => {
-                            self.push_info(format!("peer connected: {peer_id}"));
+                            self.push_system(format!("peer connected: {peer_id}"));
                         }
                         ClientEvent::PeerDisconnected(peer_id) => {
-                            self.push_info(format!("peer disconnected: {peer_id}"));
+                            self.push_system(format!("peer disconnected: {peer_id}"));
                         }
                         ClientEvent::Dialing(peer_id) => {
-                            self.push_info(format!("dialing: {peer_id}"));
+                            self.push_system(format!("dialing: {peer_id}"));
                         }
                         ClientEvent::OutgoingConnectionError {
                             peer_id: _,
                             error: _,
                         } => {
-                            self.push_info("failed to connect to peer");
+                            self.push_system("failed to connect to peer");
                         }
                         _ => {}
                     }
                     self.draw(writer)?;
                 }
                 event = term_events.select_next_some() => {
-                    // TODO handle multiple messages at a time, mostly for copy/paste
-                    if let Some(event) = self.handle_event(event?) {
-                        match event {
-                            AppEvent::SendMessage(message) => {
-                                match self.client.get_mut().send_message(&message, MessageType::Normal) {
-                                    Err(Error::PublishError(PublishError::InsufficientPeers)) => {
-                                        self.push_info("could not send message, insufficient peers");
-                                    }
-                                    Err(err) => self.push_info(format!("{err:?}")),
-                                    Ok(_) => {
-                                        self.push_message(self.client.get_ref().peer_id(), message, MessageType::Normal)
-                                    },
-                                }
-                            },
-                            AppEvent::Quit => break,
-                        }
-                    }
+                    self.handle_event(event?)?;
                     self.draw(writer)?;
                 }
             }
@@ -97,12 +87,13 @@ impl App {
 
         queue!(writer, cursor::Hide)?;
 
-        let lines = self
-            .history
-            .iter()
-            .rev()
-            .flat_map(|entry| {
-                let (color, prefix, contents) = match entry {
+        let lines: Vec<_> = if let Some(channel) = &self.current_channel {
+            self.channel_histories
+                .entry(channel.clone())
+                .or_default()
+                .iter()
+                .rev()
+                .map(|entry| match entry {
                     HistoryEntry::Message {
                         sender,
                         contents,
@@ -111,23 +102,29 @@ impl App {
                         let nick = match self
                             .client
                             .get_mut()
-                            .fetch_nickname(sender)
+                            .fetch_nickname(&sender)
                             .unwrap()
                         {
                             Some(nick) => nick.to_owned(),
                             None => {
-                                sender.to_base58().chars().take(12).collect()
+                                sender.to_base58().chars().take(16).collect()
                             }
                         };
-                        (style::Color::White, nick, contents.as_str())
+                        (style::Color::White, nick, contents)
                     }
-                    HistoryEntry::Info { message } => (
-                        style::Color::DarkGrey,
-                        "INFO".to_owned(),
-                        message.as_str(),
-                    ),
-                };
+                })
+                .collect()
+        } else {
+            self.system_history
+                .iter()
+                .rev()
+                .map(|entry| (style::Color::White, "INFO".to_owned(), entry))
+                .collect()
+        };
 
+        let lines = lines
+            .iter()
+            .flat_map(|(color, prefix, contents)| {
                 wrap(&prefix, contents, cols)
                     .into_iter()
                     .rev()
@@ -140,7 +137,7 @@ impl App {
             queue!(
                 writer,
                 cursor::MoveTo(0, rows - 3 - idx),
-                style::SetForegroundColor(color),
+                style::SetForegroundColor(*color),
                 style::Print(line),
                 terminal::Clear(terminal::ClearType::UntilNewLine)
             )?;
@@ -153,8 +150,27 @@ impl App {
             cursor::MoveTo(0, rows - 2),
             style::SetBackgroundColor(style::Color::DarkGrey),
             style::Print("-".repeat(cols.into())),
-            style::ResetColor,
         )?;
+
+        queue!(writer, cursor::MoveTo(0, rows - 2),)?;
+        match &self.current_channel {
+            Some(channel) => {
+                queue!(
+                    writer,
+                    style::Print("["),
+                    style::Print(channel),
+                    style::Print("]")
+                )?;
+            }
+            None => {
+                queue!(
+                    writer,
+                    style::SetForegroundColor(style::Color::Magenta),
+                    style::Print("*system*")
+                )?;
+            }
+        }
+        queue!(writer, style::ResetColor)?;
 
         let nick = self.client.get_ref().nick().clone();
         queue!(
@@ -171,14 +187,14 @@ impl App {
         Ok(())
     }
 
-    fn handle_event(&mut self, event: Event) -> Option<AppEvent> {
+    fn handle_event(&mut self, event: Event) -> anyhow::Result<()> {
         // TODO use a readline library
         if let Event::Key(event) = event {
             match event.code {
-                KeyCode::Char('c')
+                KeyCode::Char('c' | 'd')
                     if event.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    return Some(AppEvent::Quit)
+                    self.wants_to_quit = true;
                 }
                 KeyCode::Char(c) => {
                     self.input_buffer.push(c);
@@ -187,35 +203,93 @@ impl App {
                     self.input_buffer.pop();
                 }
                 KeyCode::Enter => {
-                    let event =
-                        Some(AppEvent::SendMessage(self.input_buffer.clone()));
+                    let message = self.input_buffer.clone();
                     self.input_buffer.clear();
-                    return event;
+
+                    if message.starts_with("/") {
+                        self.run_command(&message[1..])?;
+                    } else {
+                        self.send_message(message);
+                    }
                 }
                 _ => {}
             }
         }
 
-        None
+        Ok(())
+    }
+
+    fn run_command(&mut self, command: &str) -> anyhow::Result<()> {
+        let args = command.split(char::is_whitespace).collect::<Vec<_>>();
+
+        match args.as_slice() {
+            &["join", channel] => {
+                self.client.get_mut().join_channel(channel.to_owned())?;
+                self.push_system(format!("Joined channel {channel}"));
+            }
+            &["leave", channel] => {
+                self.client.get_mut().join_channel(channel.to_owned())?;
+                self.push_system(format!("Left channel {channel}"));
+            }
+            &["go"] => {
+                self.current_channel = None;
+            }
+            &["go", channel] => {
+                self.current_channel = Some(channel.to_owned());
+            }
+            _ => self.push_system("Invalid command"),
+        }
+
+        Ok(())
+    }
+
+    fn send_message(&mut self, message: String) {
+        if let Some(channel) = &self.current_channel {
+            match self.client.get_mut().send_message(
+                &message,
+                MessageType::Normal,
+                channel.clone(),
+            ) {
+                Err(Error::PublishError(PublishError::InsufficientPeers)) => {
+                    self.push_system(
+                        "could not send message, insufficient peers",
+                    );
+                }
+                Err(err) => self.push_system(format!("{err:?}")),
+                Ok(_) => {
+                    let channel = channel.clone();
+                    self.push_message(
+                        self.client.get_ref().peer_id(),
+                        message,
+                        channel,
+                        MessageType::Normal,
+                    )
+                }
+            }
+        } else {
+            self.push_system("You are not in a channel.");
+        }
     }
 
     fn push_message(
         &mut self,
         sender: PeerId,
         contents: impl Into<String>,
+        channel: ChannelIdentifier,
         message_type: MessageType,
     ) {
-        self.history.push_back(HistoryEntry::Message {
-            sender,
-            contents: contents.into(),
-            message_type,
-        });
+        self.channel_histories
+            .entry(channel)
+            .or_default()
+            .push_back(HistoryEntry::Message {
+                sender,
+                contents: contents.into(),
+                message_type,
+            });
     }
 
-    fn push_info(&mut self, message: impl Into<String>) {
-        self.history.push_back(HistoryEntry::Info {
-            message: message.into(),
-        });
+    fn push_system(&mut self, message: impl Into<String>) {
+        self.system_history.push_back(message.into());
     }
 }
 
@@ -231,9 +305,6 @@ enum HistoryEntry {
         sender: PeerId,
         contents: String,
         message_type: MessageType,
-    },
-    Info {
-        message: String,
     },
 }
 
