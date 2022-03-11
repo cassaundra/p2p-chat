@@ -270,14 +270,9 @@ impl Client {
         }
     }
 
-    // fn publish(&mut self, command: &Command) -> crate::Result<()> {
-    //     self.swarm.behaviour_mut().gossipsub.publish(
-    //         gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC),
-    //         command.encode()?,
-    //     )?;
-
-    //     Ok(())
-    // }
+    pub fn channels(&self) -> &Vec<ChannelIdentifier> {
+        &self.channels
+    }
 
     fn handle_event<OtherErr>(
         &mut self,

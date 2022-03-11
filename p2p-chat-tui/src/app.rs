@@ -237,6 +237,10 @@ impl App {
             &["go", channel] => {
                 self.current_channel = Some(channel.to_owned());
             }
+            &["list"] => {
+                let channels = self.client.get_ref().channels().join(", ");
+                self.push_system(format!("Channels you have joined: {}", channels));
+            }
             _ => self.push_system("Invalid command"),
         }
 
