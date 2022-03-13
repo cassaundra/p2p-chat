@@ -21,7 +21,6 @@ pub const MAX_NICK_LENGTH: usize = 20;
 /// The MessagePack codec code within [multicodec](https://github.com/multiformats/multicodec).
 pub const MULTICODEC_MSGPACK: &[u8] = &[0x02, 0x01];
 
-// TODO ?
 pub type ChannelIdentifier = String;
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -65,6 +65,7 @@ impl From<MdnsEvent> for ComposedEvent {
     }
 }
 
+/// An event emitted by a [`Client`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ClientEvent {
@@ -88,6 +89,7 @@ pub enum ClientEvent {
     },
 }
 
+/// The client interface to p2p-chat.
 pub struct Client {
     nick: String,
     nick_cache: HashMap<PeerId, Option<String>>,
@@ -163,6 +165,9 @@ impl Client {
         })
     }
 
+    /// Join a channel.
+    ///
+    /// If you are already in this channel, this is a no-op.
     pub fn join_channel(
         &mut self,
         ident: ChannelIdentifier,
@@ -180,6 +185,9 @@ impl Client {
         Ok(())
     }
 
+    /// Leave a channel.
+    ///
+    /// If you are not in this channel, this is a no-op.
     pub fn leave_channel(
         &mut self,
         ident: ChannelIdentifier,
@@ -195,6 +203,7 @@ impl Client {
         Ok(())
     }
 
+    /// Post a message to a given channel.
     pub fn send_message(
         &mut self,
         message: &str,
@@ -227,25 +236,35 @@ impl Client {
         Ok(())
     }
 
+    /// Dial another client.
+    ///
+    /// This is a non-blocking operation which may cause the following events to be emitted:
+    /// - [`ClientEvent::Dialing`]
+    /// - [`ClientEvent::PeerConnected`]
+    /// - [`ClientEvent::OutgoingConnectionError`]
     pub fn dial(&mut self, addr: Multiaddr) -> crate::Result<()> {
         info!("Dialing {}", addr);
         self.swarm.dial(addr)?;
         Ok(())
     }
 
+    /// Listen on a given address.
     pub fn listen_on(&mut self, addr: Multiaddr) -> crate::Result<()> {
         self.swarm.listen_on(addr)?;
         Ok(())
     }
 
+    /// Get whether or not this client is connected to a given peer.
     pub fn is_connected(&self, peer_id: &PeerId) -> bool {
         self.swarm.is_connected(peer_id)
     }
 
+    /// Get this client's peer ID.
     pub fn peer_id(&self) -> PeerId {
         PeerId::from(self.id_keys.public())
     }
 
+    /// Get this client's nickname.
     pub fn nick(&self) -> &String {
         &self.nick
     }
@@ -270,6 +289,7 @@ impl Client {
         }
     }
 
+    /// Get the list of channels which we are connected to.
     pub fn channels(&self) -> &Vec<ChannelIdentifier> {
         &self.channels
     }
@@ -440,10 +460,14 @@ fn message_id_fn(
 
 // TODO seeds
 
+/// Generate a public/private Ed25519 keypair.
 pub fn gen_id_keys() -> Keypair {
     Keypair::generate_ed25519()
 }
 
+/// Generate a static keypair for this session.
+///
+/// This should *not* be re-used between sessions.
 pub fn gen_static_keypair(
     id_keys: &Keypair,
 ) -> crate::Result<AuthenticKeypair<X25519Spec>> {
