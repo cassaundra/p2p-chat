@@ -112,41 +112,58 @@ impl Client {
             .multiplex(mplex::MplexConfig::new())
             .boxed();
 
-        let topic = gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC);
-
         let swarm = {
-            let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
-                .heartbeat_interval(Duration::from_secs(15))
-                .validation_mode(gossipsub::ValidationMode::Strict)
-                .validate_messages()
-                .message_id_fn(message_id_fn)
-                .build()
-                .unwrap();
+            //  gossipsub
 
-            let memory_store = MemoryStore::new(peer_id);
-            let mut kademlia = Kademlia::new(peer_id, memory_store);
-
-            let nick_key = Key::new(&MemoryKey::Nickname(peer_id).encode()?);
-            let nick_value = MemoryValue::Nickname {
-                user: peer_id,
-                nickname: nick.to_owned(),
-            }
-            .encode_signed(&id_keys)?;
-
-            kademlia.start_providing(nick_key.clone())?;
-            kademlia
-                .put_record(Record::new(nick_key, nick_value), Quorum::One)?;
-
-            let mut behaviour = ComposedBehaviour {
-                gossipsub: Gossipsub::new(
+            let gossipsub = {
+                let gossipsub_config =
+                    gossipsub::GossipsubConfigBuilder::default()
+                        .heartbeat_interval(Duration::from_secs(15))
+                        .validation_mode(gossipsub::ValidationMode::Strict)
+                        .validate_messages()
+                        .message_id_fn(message_id_fn)
+                        .build()
+                        .unwrap();
+                Gossipsub::new(
                     gossipsub::MessageAuthenticity::Signed(id_keys.clone()),
                     gossipsub_config,
                 )
-                .unwrap(),
-                kademlia,
-                mdns: Mdns::new(mdns::MdnsConfig::default()).await?,
+                .unwrap()
             };
 
+            let kademlia = {
+                let memory_store = MemoryStore::new(peer_id);
+                let mut kademlia = Kademlia::new(peer_id, memory_store);
+
+                // we are the provider of our own nick
+
+                let nick_key =
+                    Key::new(&MemoryKey::Nickname(peer_id).encode()?);
+                let nick_value = MemoryValue::Nickname {
+                    user: peer_id,
+                    nickname: nick.to_owned(),
+                }
+                .encode_signed(&id_keys)?;
+
+                kademlia.start_providing(nick_key.clone())?;
+                kademlia.put_record(
+                    Record::new(nick_key, nick_value),
+                    Quorum::One,
+                )?;
+
+                kademlia
+            };
+
+            let mdns = Mdns::new(mdns::MdnsConfig::default()).await?;
+
+            let mut behaviour = ComposedBehaviour {
+                gossipsub,
+                kademlia,
+                mdns,
+            };
+
+            // subscribe to the default topic for network updates
+            let topic = gossipsub::IdentTopic::new(DEFAULT_GOSSIPSUB_TOPIC);
             behaviour.gossipsub.subscribe(&topic)?;
 
             SwarmBuilder::new(transport, behaviour, peer_id)
@@ -156,9 +173,12 @@ impl Client {
                 .build()
         };
 
+        let mut nick_cache = HashMap::new();
+        nick_cache.insert(peer_id, Some(nick.to_owned()));
+
         Ok(Client {
             nick: nick.to_owned(),
-            nick_cache: HashMap::new(),
+            nick_cache,
             channels: Vec::new(),
             id_keys,
             swarm,
@@ -272,21 +292,20 @@ impl Client {
     pub fn fetch_nickname(
         &mut self,
         peer: &PeerId,
-    ) -> crate::Result<Option<&String>> {
-        // TODO this is waaayyyy bad! :o
-        match self.nick_cache.get(peer) {
-            Some(Some(nick)) => Ok(Some(nick)),
-            Some(None) => Ok(None),
-            None => {
-                let key = Key::new(&MemoryKey::Nickname(*peer).encode()?);
-                self.swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .get_record(key, Quorum::One);
-                // self.nick_cache.insert(*peer, None);
-                Ok(None)
-            }
+    ) -> crate::Result<&Option<String>> {
+        // this seems to be the only way to satisfy the borrow checker ._.
+        if self.nick_cache.contains_key(peer) {
+            return Ok(self.nick_cache.get(peer).unwrap());
         }
+
+        let key = Key::new(&MemoryKey::Nickname(*peer).encode()?);
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .get_record(key, Quorum::One);
+        self.nick_cache.insert(*peer, None);
+
+        Ok(&None)
     }
 
     /// Get the list of channels which we are connected to.
@@ -359,8 +378,13 @@ impl Client {
                     }
                 }
             },
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
+            SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            } => {
+                self.swarm.behaviour_mut().kademlia.add_address(
+                    &peer_id,
+                    endpoint.get_remote_address().clone(),
+                );
                 return Ok(Some(ClientEvent::PeerConnected(peer_id)));
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
@@ -457,8 +481,6 @@ fn message_id_fn(
     message.data.hash(&mut hasher);
     gossipsub::MessageId::from(hasher.finish().to_string())
 }
-
-// TODO seeds
 
 /// Generate a public/private Ed25519 keypair.
 pub fn gen_id_keys() -> Keypair {

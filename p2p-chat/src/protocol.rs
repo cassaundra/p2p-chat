@@ -66,18 +66,14 @@ impl Command {
         // TODO buff?
         let dec: Command = rmp_serde::from_read(encoded)?;
 
-        if !dec.is_valid() {
-            return Err(crate::Error::InvalidData(String::from(
-                "decoded command not valid",
-            )));
-        }
+        dec.check_valid()?;
 
         Ok(dec)
     }
 
     pub fn encode(&self) -> crate::Result<Vec<u8>> {
-        let enc = rmp_serde::to_vec(self)?;
-        Ok(enc)
+        self.check_valid()?;
+        Ok(rmp_serde::to_vec(self)?)
     }
 
     pub fn is_valid(&self) -> bool {
@@ -97,6 +93,16 @@ impl Command {
                 nick.is_empty() && nick.len() <= MAX_NICK_LENGTH
             }
             _ => true,
+        }
+    }
+
+    fn check_valid(&self) -> crate::Result<()> {
+        if !self.is_valid() {
+            Err(crate::Error::InvalidData(String::from(
+                "command is not valid",
+            )))
+        } else {
+            Ok(())
         }
     }
 }

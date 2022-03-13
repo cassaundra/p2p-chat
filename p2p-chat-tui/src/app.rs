@@ -9,9 +9,9 @@ use futures::StreamExt;
 use futures_timer::Delay;
 use libp2p::gossipsub::error::PublishError;
 use libp2p::PeerId;
-use p2p_chat::protocol::{ChannelIdentifier, MessageType};
 use tokio::select;
 
+use p2p_chat::protocol::{ChannelIdentifier, MessageType};
 use p2p_chat::{Client, ClientEvent, Error};
 
 pub struct App {
@@ -35,18 +35,23 @@ impl App {
         }
     }
 
+    /// Run the app, blocking until it finishes executing.
     pub async fn run<W: Write>(
         &mut self,
         writer: &mut W,
     ) -> anyhow::Result<()> {
         let mut term_events = EventStream::new().fuse();
 
+        // do an initial draw
+        self.draw(writer, false)?;
+
         while !self.wants_to_quit {
-            let tick = Delay::new(Duration::from_millis(1000 / 4));
+            // redraw every two seconds just in case
+            let tick = Delay::new(Duration::from_secs(5));
 
             select! {
                 _ = tick => {
-                    self.draw(writer)?;
+                    self.draw(writer, false)?;
                 }
                 Some(event) = self.client.select_next_some() => {
                     match event {
@@ -70,22 +75,34 @@ impl App {
                         }
                         _ => {}
                     }
-                    self.draw(writer)?;
+                    self.draw(writer, false)?;
                 }
                 event = term_events.select_next_some() => {
-                    self.handle_event(event?)?;
-                    self.draw(writer)?;
+                    let event = event?;
+
+                    self.handle_event(event)?;
+
+                    let should_clear = matches!(event, Event::Resize(_, _));
+                    self.draw(writer, should_clear)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn draw<W: Write>(&mut self, writer: &mut W) -> anyhow::Result<()> {
+    fn draw<W: Write>(
+        &mut self,
+        writer: &mut W,
+        should_clear: bool,
+    ) -> anyhow::Result<()> {
         let (cols, rows) =
             terminal::size().expect("could not determine terminal size");
 
         queue!(writer, cursor::Hide)?;
+
+        if should_clear {
+            queue!(writer, terminal::Clear(terminal::ClearType::All))?;
+        }
 
         let lines: Vec<_> = if let Some(channel) = &self.current_channel {
             self.channel_histories
@@ -102,7 +119,7 @@ impl App {
                         let nick = match self
                             .client
                             .get_mut()
-                            .fetch_nickname(&sender)
+                            .fetch_nickname(sender)
                             .unwrap()
                         {
                             Some(nick) => nick.to_owned(),
@@ -125,7 +142,7 @@ impl App {
         let lines = lines
             .iter()
             .flat_map(|(color, prefix, contents)| {
-                wrap(&prefix, contents, cols)
+                wrap(prefix, contents, cols)
                     .into_iter()
                     .rev()
                     .map(move |line| (color, line))
@@ -163,11 +180,7 @@ impl App {
                 )?;
             }
             None => {
-                queue!(
-                    writer,
-                    style::SetForegroundColor(style::Color::Magenta),
-                    style::Print("*system*")
-                )?;
+                queue!(writer, style::Print("*system*"))?;
             }
         }
         queue!(writer, style::ResetColor)?;
@@ -206,8 +219,8 @@ impl App {
                     let message = self.input_buffer.clone();
                     self.input_buffer.clear();
 
-                    if message.starts_with("/") {
-                        self.run_command(&message[1..])?;
+                    if let Some(command) = message.strip_prefix('/') {
+                        self.run_command(command)?;
                     } else {
                         self.send_message(message);
                     }
@@ -222,24 +235,27 @@ impl App {
     fn run_command(&mut self, command: &str) -> anyhow::Result<()> {
         let args = command.split(char::is_whitespace).collect::<Vec<_>>();
 
-        match args.as_slice() {
-            &["join", channel] => {
+        match *args.as_slice() {
+            ["join", channel] => {
                 self.client.get_mut().join_channel(channel.to_owned())?;
                 self.push_system(format!("Joined channel {channel}"));
             }
-            &["leave", channel] => {
+            ["leave", channel] => {
                 self.client.get_mut().join_channel(channel.to_owned())?;
                 self.push_system(format!("Left channel {channel}"));
             }
-            &["go"] => {
+            ["go"] => {
                 self.current_channel = None;
             }
-            &["go", channel] => {
+            ["go", channel] => {
                 self.current_channel = Some(channel.to_owned());
             }
-            &["list"] => {
+            ["list"] => {
                 let channels = self.client.get_ref().channels().join(", ");
-                self.push_system(format!("Channels you have joined: {}", channels));
+                self.push_system(format!(
+                    "Channels you have joined: {}",
+                    channels
+                ));
             }
             _ => self.push_system("Invalid command"),
         }
@@ -295,12 +311,6 @@ impl App {
     fn push_system(&mut self, message: impl Into<String>) {
         self.system_history.push_back(message.into());
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum AppEvent {
-    SendMessage(String),
-    Quit,
 }
 
 #[derive(Clone, Debug)]
