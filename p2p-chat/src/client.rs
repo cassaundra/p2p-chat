@@ -113,8 +113,6 @@ impl Client {
             .boxed();
 
         let swarm = {
-            //  gossipsub
-
             let gossipsub = {
                 let gossipsub_config =
                     gossipsub::GossipsubConfigBuilder::default()

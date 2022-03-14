@@ -13,7 +13,7 @@ pub const SIGNED_ENVELOPE_DOMAIN: &str = "p2p-chat-data";
 pub const MAX_MESSAGE_LENGTH: usize = 512;
 
 /// The maximum length of a channel identifier, in characters.
-pub const MAX_CHANNEL_IDENTIFIER_LENGTH: usize = 64;
+pub const MAX_CHANNEL_IDENTIFIER_LENGTH: usize = 20;
 
 /// The maximum length of a nickname, in characters.
 pub const MAX_NICK_LENGTH: usize = 20;
@@ -87,10 +87,11 @@ impl Command {
                 // TODO validate timestamp?
                 !contents.is_empty()
                     && contents.len() <= MAX_MESSAGE_LENGTH
+                    && !channel.is_empty()
                     && channel.len() <= MAX_CHANNEL_IDENTIFIER_LENGTH
             }
             Command::NicknameUpdate { nick } => {
-                nick.is_empty() && nick.len() <= MAX_NICK_LENGTH
+                !nick.is_empty() && nick.len() <= MAX_NICK_LENGTH
             }
             _ => true,
         }
@@ -164,4 +165,87 @@ impl MemoryValue {
 
 pub fn topic_from_channel(ident: &ChannelIdentifier) -> gossipsub::IdentTopic {
     gossipsub::IdentTopic::new(format!("/p2p-chat/channel/{ident}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_message_send() {
+        // good
+        assert!(Command::MessageSend {
+            contents: "hello world!".to_owned(),
+            channel: "hello".to_owned(),
+            timestamp: 64,
+            message_type: MessageType::Normal
+        }
+        .is_valid());
+
+        // bad: too long of channel name
+        assert!(!Command::MessageSend {
+            contents: "hello world!".to_owned(),
+            channel: "thisisanabsurdlylongchannelnameohnoiwonderifthisisokay"
+                .to_owned(),
+            timestamp: 64,
+            message_type: MessageType::Normal
+        }
+        .is_valid());
+
+        // bad: empty channel name
+        assert!(!Command::MessageSend {
+            contents: "hello world!".to_owned(),
+            channel: String::new(),
+            timestamp: 64,
+            message_type: MessageType::Normal
+        }
+        .is_valid());
+
+        // bad: very long message
+        assert!(!Command::MessageSend {
+            contents: String::new(),
+            channel: "hello".repeat(200),
+            timestamp: 0,
+            message_type: MessageType::Normal
+        }
+        .is_valid());
+
+        // bad: empty message
+        assert!(!Command::MessageSend {
+            contents: String::new(),
+            channel: "hello".to_owned(),
+            timestamp: 0,
+            message_type: MessageType::Me
+        }
+        .is_valid());
+    }
+
+    #[test]
+    fn test_command_nickname_update() {
+        // good
+        assert!(Command::NicknameUpdate {
+            nick: "alice".to_owned()
+        }
+        .is_valid());
+
+        // bad: name empty
+        assert!(!Command::NicknameUpdate {
+            nick: String::new(),
+        }
+        .is_valid());
+
+        // bad: name too long
+        assert!(!Command::NicknameUpdate {
+            nick: "verylongnameverylongname".to_owned()
+        }
+        .is_valid());
+    }
+
+    #[test]
+    fn test_channel_topics() {
+        assert_eq!(
+            "/p2p-chat/channel/hello world",
+            &format!("{}", topic_from_channel(&"hello world".to_owned()))
+        )
+    }
 }
