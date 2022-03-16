@@ -74,11 +74,11 @@ pub enum ClientEvent {
         channel: ChannelIdentifier,
         timestamp: u64,
         message_type: MessageType,
-        source: PeerId,
+        sender: PeerId,
     },
     UpdatedNickname {
         nick: String,
-        source: PeerId,
+        sender: PeerId,
     },
     PeerConnected(PeerId),
     PeerDisconnected(PeerId),
@@ -93,7 +93,6 @@ pub enum ClientEvent {
 pub struct Client {
     nick: String,
     nick_cache: HashMap<PeerId, Option<String>>,
-    channels: Vec<ChannelIdentifier>,
     id_keys: Keypair,
     swarm: Swarm<ComposedBehaviour>,
 }
@@ -177,46 +176,33 @@ impl Client {
         Ok(Client {
             nick: nick.to_owned(),
             nick_cache,
-            channels: Vec::new(),
             id_keys,
             swarm,
         })
     }
 
-    /// Join a channel.
-    ///
-    /// If you are already in this channel, this is a no-op.
-    pub fn join_channel(
+    /// Join a channel by subscribing to it.
+    pub fn subscribe_channel(
         &mut self,
         ident: ChannelIdentifier,
     ) -> crate::Result<()> {
-        if self.channels.contains(&ident) {
-            return Ok(());
-        }
-
         self.swarm
             .behaviour_mut()
             .gossipsub
             .subscribe(&topic_from_channel(&ident))?;
-        self.channels.push(ident);
 
         Ok(())
     }
 
-    /// Leave a channel.
-    ///
-    /// If you are not in this channel, this is a no-op.
-    pub fn leave_channel(
+    /// Leave a channel by unsubscribing from it.
+    pub fn unsubscribe_channel(
         &mut self,
         ident: ChannelIdentifier,
     ) -> crate::Result<()> {
-        if let Some(idx) = self.channels.iter().position(|c| *c == ident) {
-            self.channels.remove(idx);
-            self.swarm
-                .behaviour_mut()
-                .gossipsub
-                .subscribe(&topic_from_channel(&ident))?;
-        }
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .unsubscribe(&topic_from_channel(&ident))?;
 
         Ok(())
     }
@@ -304,11 +290,6 @@ impl Client {
         self.nick_cache.insert(*peer, None);
 
         Ok(&None)
-    }
-
-    /// Get the list of channels which we are connected to.
-    pub fn channels(&self) -> &Vec<ChannelIdentifier> {
-        &self.channels
     }
 
     fn handle_event<OtherErr>(
@@ -420,6 +401,8 @@ impl Client {
                     acceptance = gossipsub::MessageAcceptance::Reject;
                 }
 
+                let sender = message.source.unwrap();
+
                 match cmd {
                     Command::MessageSend {
                         contents,
@@ -431,11 +414,11 @@ impl Client {
                         channel,
                         timestamp,
                         message_type,
-                        source,
+                        sender,
                     }),
                     Command::NicknameUpdate { nick } => {
-                        self.nick_cache.insert(source, Some(nick.clone()));
-                        Some(ClientEvent::UpdatedNickname { nick, source })
+                        self.nick_cache.insert(sender, Some(nick.clone()));
+                        Some(ClientEvent::UpdatedNickname { nick, sender })
                     }
                     _ => None,
                 }
